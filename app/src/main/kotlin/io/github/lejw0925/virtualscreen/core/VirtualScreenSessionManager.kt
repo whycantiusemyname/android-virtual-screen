@@ -263,7 +263,7 @@ class VirtualScreenSessionManager(
         fence(); update { it.copy(lease = lease) }
         return LeaseDecision.Granted(lease)
     }
-    fun cancelActive(owner: String? = null) { if(owner == null || leases.snapshot()?.owner == owner) fence() }
+    @Synchronized fun cancelActive(owner: String? = null) { if(owner == null || leases.snapshot()?.owner == owner) fence() }
     private fun requireLease(owner: String, token: String) {
         check(touchLease(owner, token) is LeaseDecision.Granted) { "LEASE_REQUIRED" }
     }

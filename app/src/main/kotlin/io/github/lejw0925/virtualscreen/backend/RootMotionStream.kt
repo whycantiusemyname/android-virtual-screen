@@ -171,8 +171,12 @@ internal class RootMotionStream(
 
     private fun cancelTouch() {
         val previous = lastEvent
-        if (previous != null && state.active) {
-            val indices = (0 until previous.pointerCount).filter { previous.getPointerId(it) in state.pointerIds }
+        if (previous != null) {
+            // Validation may already have advanced state for an event whose injection
+            // failed. Cancel the pointers from the last successfully injected event.
+            val indices = (0 until previous.pointerCount).filter {
+                previous.actionMasked != MotionEvent.ACTION_POINTER_UP || it != previous.actionIndex
+            }
             if (indices.isNotEmpty()) {
                 val properties = indices.map { index -> MotionEvent.PointerProperties().also { previous.getPointerProperties(index, it) } }.toTypedArray()
                 val coords = indices.map { index -> MotionEvent.PointerCoords().also { previous.getPointerCoords(index, it) } }.toTypedArray()
