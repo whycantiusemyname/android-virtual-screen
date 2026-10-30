@@ -170,4 +170,35 @@ class SessionManagerTest {
         assertEquals("STALE_OBSERVATION",runCatching { manager.operate(successor.owner,successor.token,observed,BackendOperation.Tap(10,10)) }.exceptionOrNull()?.message)
         assertEquals(0,root.inputs)
     }
+    @Test fun oldOwnerCancellationCannotFenceTheNextController() = runBlocking {
+        val root = FakeBackend(BackendKind.ROOT)
+        val manager = VirtualScreenSessionManager(context, root, FakeBackend(BackendKind.SHIZUKU))
+        val first = (manager.acquireLease("first") as LeaseDecision.Granted).lease
+        manager.create(first.owner, first.token)
+        val cancellation = java.util.concurrent.FutureTask { manager.cancelActive(first.owner) }
+        val worker = Thread(cancellation, "old-controller-cancellation").apply { isDaemon = true }
+        var observed: String? = null
+        var cancelledBefore = 0
+        try {
+            synchronized(manager) {
+                worker.start()
+                val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+                while (worker.state != Thread.State.BLOCKED && System.nanoTime() < deadline) Thread.yield()
+                assertEquals("Cancellation must wait for the controller transition", Thread.State.BLOCKED, worker.state)
+                assertTrue(manager.releaseLease(first.owner, first.token) is LeaseDecision.Granted)
+                val next = (manager.acquireLease("next") as LeaseDecision.Granted).lease
+                observed = runBlocking {
+                    manager.observe(next.owner, next.token, captureFrame = false).getOrThrow().values["observation_id"] as String
+                }
+                cancelledBefore = root.cancelled
+            }
+            cancellation.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals("next", manager.leaseStatus()?.owner)
+            assertEquals(observed, manager.state.value.observationId)
+            assertEquals(cancelledBefore, root.cancelled)
+        } finally {
+            worker.join(5_000)
+            manager.shutdown()
+        }
+    }
 }
