@@ -42,9 +42,19 @@ abstract class CommandBackend(protected val context: Context) : VirtualScreenBac
         transact(packet(handle, "probe")).checked(); true
     } catch(c: CancellationException) { throw c } catch(_: Exception) { false }
 
-    override suspend fun launch(handle: VirtualScreenHandle, component: String, uri: String?, restartApproved: Boolean): BackendResult = response {
+    override suspend fun launch(handle: VirtualScreenHandle, component: String, uri: String?, restartApproved: Boolean): BackendResult =
+        launch(handle, component, uri, restartApproved, allowUnresizable = false)
+
+    override suspend fun launch(
+        handle: VirtualScreenHandle,
+        component: String,
+        uri: String?,
+        restartApproved: Boolean,
+        allowUnresizable: Boolean
+    ): BackendResult = response {
         transact(packet(handle, "launch").put("component", component).put("uri", uri.orEmpty())
-            .put("restartApproved", restartApproved).put("ownerPackage", context.packageName))
+            .put("restartApproved", restartApproved).put("allowUnresizable", allowUnresizable)
+            .put("ownerPackage", context.packageName))
     }
 
     override suspend fun observe(handle: VirtualScreenHandle): Result<ScreenObservation> = result {

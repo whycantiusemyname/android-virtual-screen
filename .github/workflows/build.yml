@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       device_acceptance:
-        description: Build a separate package with device regression tests
+        description: Build a separate acceptance package (versionCode 6) with device regression tests
         type: boolean
         default: false
 
@@ -42,7 +42,11 @@ jobs:
           text = build.read_text()
           original = 'applicationId = "io.github.lejw0925.virtualscreen"'
           assert text.count(original) == 1
-          build.write_text(text.replace(original, 'applicationId = "io.github.lejw0925.virtualscreen.acceptance"'))
+          text = text.replace(original, 'applicationId = "io.github.lejw0925.virtualscreen.acceptance"')
+          original_version = 'versionCode = 5'
+          assert text.count(original_version) == 1
+          text = text.replace(original_version, 'versionCode = 6')
+          build.write_text(text)
           root = Path('app/src')
           package = Path('kotlin/io/github/lejw0925/virtualscreen')
           for name in ['SessionManagerTest.kt', 'backend/RootMotionStreamTest.kt']:

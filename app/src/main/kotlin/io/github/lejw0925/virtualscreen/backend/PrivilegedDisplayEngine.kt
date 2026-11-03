@@ -201,7 +201,8 @@ internal class PrivilegedDisplayEngine : AutoCloseable {
         require(target.packageName != request.optString("ownerPackage") || diagnostic) { "APP_NOT_LAUNCHABLE" }
         require(info.enabled && info.exported) { "APP_NOT_LAUNCHABLE" }
         val resizeMode = ActivityInfo::class.java.getField("resizeMode").getInt(info)
-        require(ActivityInfo::class.java.getDeclaredMethod("isResizeableMode", Int::class.javaPrimitiveType).invoke(null, resizeMode) == true) { "DISPLAY_APP_UNSUPPORTED" }
+        val resizeable = ActivityInfo::class.java.getDeclaredMethod("isResizeableMode", Int::class.javaPrimitiveType).invoke(null, resizeMode) == true
+        enforceResizeableSupport(resizeable, request.optBoolean("allowUnresizable", false))
         fun matchesTarget(task: ActivityManager.RunningTaskInfo): Boolean = if (diagnostic) {
             task.baseActivity == target || task.topActivity == target
         } else task.baseActivity?.packageName == target.packageName || task.topActivity?.packageName == target.packageName
@@ -299,4 +300,8 @@ internal class PrivilegedDisplayEngine : AutoCloseable {
             finally { p.destroy() }
         }
     }
+}
+
+internal fun enforceResizeableSupport(isResizeable: Boolean, allowUnresizable: Boolean) {
+    if (!allowUnresizable) require(isResizeable) { "DISPLAY_APP_UNSUPPORTED" }
 }

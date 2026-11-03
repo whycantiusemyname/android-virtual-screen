@@ -152,6 +152,21 @@ interface VirtualScreenBackend {
     suspend fun create(config: VirtualScreenConfig): Result<VirtualScreenHandle>
     suspend fun close(handle: VirtualScreenHandle): BackendResult
     suspend fun launch(handle: VirtualScreenHandle, component: String, uri: String? = null, restartApproved: Boolean = false): BackendResult
+    /**
+     * Launch with a per-request resize compatibility opt-in. Backends that do
+     * not implement this extension keep their old behavior and reject the opt-in.
+     */
+    suspend fun launch(
+        handle: VirtualScreenHandle,
+        component: String,
+        uri: String?,
+        restartApproved: Boolean,
+        allowUnresizable: Boolean
+    ): BackendResult = if (allowUnresizable) {
+        BackendResult.failure("UNRESIZABLE_LAUNCH_UNSUPPORTED")
+    } else {
+        launch(handle, component, uri, restartApproved)
+    }
     suspend fun observe(handle: VirtualScreenHandle): Result<ScreenObservation>
     /** Validate display geometry without encoding an image for tree-only observations. */
     suspend fun inspect(handle: VirtualScreenHandle): Result<ScreenObservation> = observe(handle)

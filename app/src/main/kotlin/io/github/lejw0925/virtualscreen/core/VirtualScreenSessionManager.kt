@@ -320,7 +320,7 @@ class VirtualScreenSessionManager(
             update { it.copy(status = SessionStatus.STOPPED, sessionId = null, displayId = null, observationId = null, frame = null, observationGeneration = epoch.get(),previewStatus=PreviewStatus.HIDDEN, errorCode = null) }
         }
     }
-    suspend fun launch(owner: String, token: String, component: String, uri: String? = null, purpose: String = "", clientName: String = ""): OperationEnvelope {
+    suspend fun launch(owner: String, token: String, component: String, uri: String? = null, purpose: String = "", clientName: String = "", allowUnresizable: Boolean = false): OperationEnvelope {
         requireLease(owner, token)
         if (!launchMutex.tryLock()) return OperationEnvelope.failure("APP_LAUNCH_BUSY", state.value.sessionId)
         var ticket: AppRestartApprovalManager.Ticket? = null
@@ -332,7 +332,7 @@ class VirtualScreenSessionManager(
                 requireLease(owner, token)
                 expected = epoch.get()
                 target = requireHandle()
-                val result = backend().launch(target, component, uri)
+                val result = backend().launch(target, component, uri, restartApproved = false, allowUnresizable = allowUnresizable)
                 verify(owner, token, expected)
                 invalidateObservation()
                 if (result.code == "APP_RESTART_CONFIRMATION_REQUIRED") {
@@ -364,7 +364,7 @@ class VirtualScreenSessionManager(
                 verify(owner, token, expected)
                 check(handle == target) { "STALE_VIRTUAL_SCREEN" }
                 requireLease(owner, token)
-                val result = backend().launch(requireHandle(), component, uri, restartApproved = true)
+                val result = backend().launch(requireHandle(), component, uri, restartApproved = true, allowUnresizable = allowUnresizable)
                 verify(owner, token, expected)
                 invalidateObservation()
                 result.toEnvelope(state.value.sessionId)

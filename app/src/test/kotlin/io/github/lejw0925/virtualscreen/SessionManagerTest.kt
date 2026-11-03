@@ -13,9 +13,12 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 internal class FakeBackend(override val kind: BackendKind): VirtualScreenBackend {
+    data class Launch(val component: String, val uri: String?, val restartApproved: Boolean, val allowUnresizable: Boolean)
     var closed=0; var inputs=0; var cancelled=0
     var frames=0; var inspections=0
     var previews=0
+    val launches=mutableListOf<Launch>()
+    var launchResult=BackendResult.success()
     var observationFailure: String?=null
     var inspectionFailure: String?=null
     var nodeFailure: String?=null
@@ -28,7 +31,10 @@ internal class FakeBackend(override val kind: BackendKind): VirtualScreenBackend
         entered.complete(Unit); createGate?.await(); return Result.success(VirtualScreenHandle("handle",7,config))
     }
     override suspend fun close(handle: VirtualScreenHandle)=BackendResult.success().also { closed++ }
-    override suspend fun launch(handle: VirtualScreenHandle,component: String,uri: String?,restartApproved: Boolean)=BackendResult.success()
+    override suspend fun launch(handle: VirtualScreenHandle,component: String,uri: String?,restartApproved: Boolean)=
+        launch(handle,component,uri,restartApproved,allowUnresizable=false)
+    override suspend fun launch(handle: VirtualScreenHandle,component: String,uri: String?,restartApproved: Boolean,allowUnresizable: Boolean)=
+        launchResult.also { launches += Launch(component,uri,restartApproved,allowUnresizable) }
     override suspend fun observe(handle: VirtualScreenHandle): Result<ScreenObservation> {
         frames++
         return observationFailure?.let { Result.failure(IllegalStateException(it)) } ?: Result.success(ScreenObservation("backend-id",handle.id,0,720,1600,0))

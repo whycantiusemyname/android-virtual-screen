@@ -132,6 +132,10 @@ class McpToolsTest {
         assertTrue(specs.getValue("get_request_receipt").schema.getJSONArray("required").toString().contains("request_id"))
         assertTrue(specs.getValue("list_apps").readOnly)
         assertFalse(specs.getValue("launch_app").readOnly)
+        val resizeOptIn=specs.getValue("launch_app").schema.getJSONObject("properties").getJSONObject("allow_unresizable")
+        assertEquals("boolean",resizeOptIn.getString("type"))
+        assertFalse(resizeOptIn.getBoolean("default"))
+        assertFalse(specs.getValue("launch_app").schema.getJSONArray("required").toString().contains("allow_unresizable"))
         val invalid=mapOf("tap_at" to JSONObject().put("points",JSONArray("[[1,2],[3,4]]")).put("x",5).put("y",5),
             "swipe_path" to JSONObject().put("points",JSONArray("[[1,2],[3,4]]")).put("x",5),
             "close_screen" to JSONObject().put("width",720),"list_apps" to JSONObject().put("component","fixture/.Main"))
@@ -280,16 +284,35 @@ class McpToolsTest {
         val launch=JSONObject().put("purpose","Open the fixture app").put("lease_token",lease.token)
             .put("component","io.github.lejw0925.virtualscreen.fixture/.FixtureActivity")
         val result=registry.call("launch_app",launch,"test").getJSONObject("structuredContent")
+        assertFalse(root.launches.single().allowUnresizable)
         assertEquals("available",result.getString("observation_status"))
         assertFalse(result.getBoolean("requires_observation"))
         assertTrue(result.has("observation_id"))
         assertEquals(0,root.frames)
         assertEquals(1,root.inspections)
-        launch.put("observe_after","none")
+        launch.put("observe_after","none").put("allow_unresizable",true)
         val optedOut=registry.call("launch_app",launch,"test").getJSONObject("structuredContent")
+        assertTrue(root.launches.last().allowUnresizable)
         assertFalse(optedOut.has("observation_status"))
         assertTrue(optedOut.getBoolean("requires_observation"))
         assertTrue(optedOut.getBoolean("ok"))
+        sessions.shutdown()
+    }
+    @Test fun failedOptedInLaunchIsNotReportedAsVerified() = runBlocking {
+        val root=FakeBackend(BackendKind.ROOT).apply { launchResult=BackendResult.failure("DISPLAY_LAUNCH_REJECTED") }
+        val sessions=VirtualScreenSessionManager(RuntimeEnvironment.getApplication(),root,FakeBackend(BackendKind.SHIZUKU))
+        val registry=McpToolRegistry(sessions)
+        val lease=(sessions.acquireLease("test") as LeaseDecision.Granted).lease
+        sessions.create("test",lease.token)
+        val result=registry.call("launch_app",JSONObject().put("purpose","Try the experimental launch")
+            .put("lease_token",lease.token).put("component","fixture/.Main").put("allow_unresizable",true),"test")
+        val data=result.getJSONObject("structuredContent")
+        assertTrue(result.getBoolean("isError"))
+        assertFalse(data.getBoolean("ok"))
+        assertEquals("DISPLAY_LAUNCH_REJECTED",data.getString("code"))
+        assertFalse(data.has("observation_status"))
+        assertTrue(root.launches.single().allowUnresizable)
+        assertEquals(0,root.inspections)
         sessions.shutdown()
     }
     @Test fun reconfigureReturnsFreshObservationAfterRebuildingDisplay() = runBlocking {

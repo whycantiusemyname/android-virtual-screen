@@ -16,13 +16,16 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 internal class RestartBackend(private val delegate: FakeBackend = FakeBackend(BackendKind.ROOT)) : VirtualScreenBackend by delegate {
-    data class Launch(val component: String, val uri: String?, val approved: Boolean)
+    data class Launch(val component: String, val uri: String?, val approved: Boolean, val allowUnresizable: Boolean)
     val launches = mutableListOf<Launch>()
     var conflict = true
     var initialGate: CompletableDeferred<Unit>? = null
     val entered = CompletableDeferred<Unit>()
-    override suspend fun launch(handle: VirtualScreenHandle, component: String, uri: String?, restartApproved: Boolean): BackendResult {
-        launches += Launch(component, uri, restartApproved)
+    override suspend fun launch(handle: VirtualScreenHandle, component: String, uri: String?, restartApproved: Boolean): BackendResult =
+        launch(handle, component, uri, restartApproved, allowUnresizable = false)
+
+    override suspend fun launch(handle: VirtualScreenHandle, component: String, uri: String?, restartApproved: Boolean, allowUnresizable: Boolean): BackendResult {
+        launches += Launch(component, uri, restartApproved, allowUnresizable)
         entered.complete(Unit)
         if (!restartApproved) initialGate?.await()
         return if (conflict && !restartApproved) BackendResult.failure("APP_RESTART_CONFIRMATION_REQUIRED")
@@ -45,11 +48,18 @@ class AppRestartApprovalTest {
     }
     private suspend fun Fixture.launch(uri: String? = null) = sessions.launch(lease.owner, lease.token, "fixture/.Main", uri, "在虚拟屏测试应用", "Test agent")
 
+    @Test fun resizeabilityPrecheckRemainsDefaultDenyAndOptInOnlySkipsThatCheck() {
+        val defaultFailure = runCatching { enforceResizeableSupport(isResizeable = false, allowUnresizable = false) }.exceptionOrNull()
+        assertEquals("DISPLAY_APP_UNSUPPORTED", defaultFailure?.message)
+        enforceResizeableSupport(isResizeable = false, allowUnresizable = true)
+        enforceResizeableSupport(isResizeable = true, allowUnresizable = false)
+    }
+
     @Test fun noConflictLaunchesImmediatelyWithoutApproval() = runTest {
         val f = fixture { testScheduler.currentTime }; f.backend.conflict = false
         assertTrue(f.launch().ok)
         assertTrue(f.sessions.restartApprovals.pending.value.isEmpty())
-        assertEquals(listOf(RestartBackend.Launch("fixture/.Main", null, false)), f.backend.launches)
+        assertEquals(listOf(RestartBackend.Launch("fixture/.Main", null, false, false)), f.backend.launches)
     }
 
     @Test fun approvalWaitsPastOneMinuteAndPreservesLeaseComponentAndUri() = runTest {
@@ -67,9 +77,34 @@ class AppRestartApprovalTest {
         assertEquals(f.lease.token, f.sessions.leaseStatus()!!.token)
         assertNull(f.sessions.state.value.observationId)
         assertEquals(listOf(false, true), f.backend.launches.map { it.approved })
+        assertTrue(f.backend.launches.none { it.allowUnresizable })
         assertTrue(f.backend.launches.all { it.component == "fixture/.Main" && it.uri == "fixture://exact-target" })
         assertFalse(f.sessions.restartApprovals.approve(request.id))
         assertTrue(f.sessions.restartApprovals.pending.value.isEmpty())
+    }
+
+    @Test fun experimentalOptInIsPreservedAcrossPhoneRestartApproval() = runTest {
+        val f = fixture { testScheduler.currentTime }
+        val launch = async {
+            f.sessions.launch(f.lease.owner, f.lease.token, "fixture/.Main", "fixture://target", "Test launch", "Test agent", allowUnresizable = true)
+        }
+        runCurrent()
+        val request = f.sessions.restartApprovals.pending.value.single()
+        assertEquals(listOf(false), f.backend.launches.map { it.approved })
+        assertTrue(f.backend.launches.single().allowUnresizable)
+        assertTrue(f.sessions.restartApprovals.approve(request.id))
+        assertTrue(launch.await().ok)
+        assertEquals(listOf(false, true), f.backend.launches.map { it.approved })
+        assertTrue(f.backend.launches.all { it.allowUnresizable && it.component == "fixture/.Main" && it.uri == "fixture://target" })
+    }
+
+    @Test fun invalidLeaseStillRejectsAnOptedInLaunchBeforeCallingBackend() = runTest {
+        val f = fixture { testScheduler.currentTime }
+        val result = runCatching {
+            f.sessions.launch(f.lease.owner, "invalid", "fixture/.Main", allowUnresizable = true)
+        }
+        assertEquals("LEASE_REQUIRED", result.exceptionOrNull()?.message)
+        assertTrue(f.backend.launches.isEmpty())
     }
 
     @Test fun denyAndUndeliverableNotificationLeaveOriginalAppRunning() = runTest {
@@ -153,12 +188,15 @@ class AppRestartApprovalTest {
 
     @Test fun concurrentLaunchCannotReplacePendingApplicationOrApproval() = runTest {
         val f = fixture { testScheduler.currentTime }
-        val first = async { f.launch() }; runCurrent()
+        val first = async {
+            f.sessions.launch(f.lease.owner, f.lease.token, "fixture/.Main", allowUnresizable = true)
+        }; runCurrent()
         val id = f.sessions.restartApprovals.pending.value.single().id
         val second = f.sessions.launch(f.lease.owner, f.lease.token, "other/.Main")
         assertEquals("APP_LAUNCH_BUSY", second.code)
         assertEquals(id, f.sessions.restartApprovals.pending.value.single().id)
         f.sessions.restartApprovals.approve(id); assertTrue(first.await().ok)
         assertTrue(f.backend.launches.all { it.component == "fixture/.Main" })
+        assertTrue(f.backend.launches.all { it.allowUnresizable })
     }
 }
