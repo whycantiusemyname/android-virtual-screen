@@ -11,6 +11,10 @@ on:
         description: Build a separate acceptance package (versionCode 6) with device regression tests
         type: boolean
         default: false
+      compatibility_candidate:
+        description: Build an unsigned independent package for review; not installable until stable signing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,6 +29,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Reject conflicting package preparation inputs
+        if: inputs.device_acceptance == true && inputs.compatibility_candidate == true
+        run: |
+          echo "Choose either device_acceptance or compatibility_candidate." >&2
+          exit 1
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
         with:
           distribution: temurin
@@ -62,10 +71,120 @@ jobs:
               target.parent.mkdir(parents=True, exist_ok=True)
               target.write_text(text)
           PY
+      - name: Prepare unsigned independent compatibility package
+        if: inputs.compatibility_candidate == true
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          compatibility_version_code = 1
+          compatibility_version_name = '0.2.1-compat-candidate'
+          build = Path('app/build.gradle.kts')
+          text = build.read_text()
+          replacements = [
+              ('namespace = "io.github.lejw0925.virtualscreen"', 'namespace = "io.github.lejw0925.virtualscreen.compat"'),
+              ('applicationId = "io.github.lejw0925.virtualscreen"', 'applicationId = "io.github.lejw0925.virtualscreen.compat"'),
+              ('versionCode = 5', f'versionCode = {compatibility_version_code}'),
+              ('versionName = "0.2.0"', f'versionName = "{compatibility_version_name}"'),
+          ]
+          for old, new in replacements:
+              assert text.count(old) == 1, f'Expected one build setting: {old}'
+              text = text.replace(old, new)
+
+          old_keystore_read = 'val releaseKeystore = providers.environmentVariable("AVS_KEYSTORE").orNull'
+          assert text.count(old_keystore_read) == 1
+          text = text.replace(old_keystore_read, 'val releaseKeystore: String? = null')
+          signing_assignment = '            if (!releaseKeystore.isNullOrBlank()) signingConfig = signingConfigs.getByName("production")'
+          assert text.count(signing_assignment) == 1
+          text = text.replace(signing_assignment, '            signingConfig = null')
+          build.write_text(text)
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'COMPAT_VERSION_CODE={compatibility_version_code}' + chr(10))
+              env.write(f'COMPAT_VERSION_NAME={compatibility_version_name}' + chr(10))
+
+          package_prefix = re.compile(r'io\.github\.lejw0925\.virtualscreen(?!\.compat|\.fixture\b)')
+          for path in Path('app/src').rglob('*'):
+              if path.suffix not in {'.kt', '.java'}:
+                  continue
+              text = path.read_text()
+              updated = package_prefix.sub('io.github.lejw0925.virtualscreen.compat', text)
+              if updated != text:
+                  path.write_text(updated)
+              assert package_prefix.search(path.read_text()) is None, f'Unrebased app package reference in {path}'
+          PY
+      - name: Verify and describe unsigned compatibility candidate
+        if: inputs.compatibility_candidate == true
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          apk = Path('app/build/outputs/apk/release/app-arm64-v8a-release-unsigned.apk')
+          if not apk.is_file():
+              raise SystemExit(f'Missing expected arm64 unsigned release APK: {apk}')
+          with zipfile.ZipFile(apk) as archive:
+              if archive.testzip() is not None:
+                  raise SystemExit('Candidate APK zip integrity check failed')
+
+          build_tools = Path(os.environ['ANDROID_HOME']) / 'build-tools' / '37.0.0'
+          badging = subprocess.run([str(build_tools / 'aapt'), 'dump', 'badging', str(apk)], check=True, capture_output=True, text=True).stdout
+          package = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.MULTILINE)
+          expected = ('io.github.lejw0925.virtualscreen.compat', os.environ['COMPAT_VERSION_CODE'], os.environ['COMPAT_VERSION_NAME'])
+          if not package or package.groups() != expected:
+              raise SystemExit(f'Unexpected package/version metadata: {package.groups() if package else "missing"}')
+          manifest_dump = subprocess.run([str(build_tools / 'aapt'), 'dump', 'xmltree', str(apk), 'AndroidManifest.xml'], check=True, capture_output=True, text=True).stdout
+          for authority in ('compat.display-bridge', 'compat.shizuku', 'compat.stellar'):
+              if f'io.github.lejw0925.virtualscreen.{authority}' not in manifest_dump:
+                  raise SystemExit(f'Provider authority did not resolve to the independent package: {authority}')
+
+          verification = subprocess.run([str(build_tools / 'apksigner'), 'verify', '--verbose', str(apk)], capture_output=True, text=True)
+          if verification.returncode == 0:
+              raise SystemExit('Candidate APK unexpectedly verifies as signed; refusing to label it unsigned')
+
+          output = Path('candidate-delivery')
+          output.mkdir(exist_ok=True)
+          candidate = output / apk.name
+          candidate.write_bytes(apk.read_bytes())
+          digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+          status = 'NOT INSTALLABLE UNTIL STABLE SIGNING. This APK is deliberately unsigned and is only for review.'
+          (output / 'NOT-INSTALLABLE-UNTIL-STABLE-SIGNING.txt').write_text(status + chr(10))
+          manifest = {
+              'schema_version': 1,
+              'source': {
+                  'repository': os.environ['GITHUB_REPOSITORY'],
+                  'ref': os.environ['GITHUB_REF'],
+                  'commit': os.environ['GITHUB_SHA'],
+              },
+              'apk': {
+                  'file': candidate.name,
+                  'sha256': digest,
+                  'package': package.group(1),
+                  'version_code': int(package.group(2)),
+                  'version_name': package.group(3),
+                  'abi': 'arm64-v8a',
+              },
+              'signing': {
+                  'status': 'UNSIGNED',
+                  'apksigner_verify_exit_code': verification.returncode,
+                  'signer_certificate_sha256': None,
+              },
+              'installability': 'NOT INSTALLABLE UNTIL STABLE SIGNING',
+          }
+          (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + chr(10))
+          (output / 'SHA256SUMS.txt').write_text(f'{digest}  {candidate.name}' + chr(10))
+          PY
       - name: Verify and build
         run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease :device-fixture:assembleDebug :app:assembleDebugAndroidTest
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: always()
+        if: always() && inputs.compatibility_candidate != true
         with:
           name: validation-and-debug
           path: |
@@ -73,6 +192,17 @@ jobs:
             app/build/test-results/
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/androidTest/debug/*.apk
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always() && inputs.compatibility_candidate == true
+        with:
+          name: unsigned-compatibility-candidate-not-installable
+          path: |
+            candidate-delivery/
+            app/build/test-results/testDebugUnitTest/**/*.xml
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/reports/lint-results-debug.txt
+            app/build/reports/lint-results-debug.html
           retention-days: 14
 
   release:
