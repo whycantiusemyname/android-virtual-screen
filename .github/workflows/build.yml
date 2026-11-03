@@ -103,6 +103,8 @@ jobs:
               env.write(f'COMPAT_VERSION_NAME={compatibility_version_name}' + chr(10))
 
           PY
+      - name: Verify and build
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease :device-fixture:assembleDebug :app:assembleDebugAndroidTest
       - name: Verify and describe unsigned compatibility candidate
         if: inputs.compatibility_candidate == true
         run: |
@@ -174,8 +176,6 @@ jobs:
           (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + chr(10))
           (output / 'SHA256SUMS.txt').write_text(f'{digest}  {candidate.name}' + chr(10))
           PY
-      - name: Verify and build
-        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease :device-fixture:assembleDebug :app:assembleDebugAndroidTest
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always() && inputs.compatibility_candidate != true
         with:
