@@ -77,14 +77,12 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import os
-          import re
 
           compatibility_version_code = 1
           compatibility_version_name = '0.2.1-compat-candidate'
           build = Path('app/build.gradle.kts')
           text = build.read_text()
           replacements = [
-              ('namespace = "io.github.lejw0925.virtualscreen"', 'namespace = "io.github.lejw0925.virtualscreen.compat"'),
               ('applicationId = "io.github.lejw0925.virtualscreen"', 'applicationId = "io.github.lejw0925.virtualscreen.compat"'),
               ('versionCode = 5', f'versionCode = {compatibility_version_code}'),
               ('versionName = "0.2.0"', f'versionName = "{compatibility_version_name}"'),
@@ -104,15 +102,6 @@ jobs:
               env.write(f'COMPAT_VERSION_CODE={compatibility_version_code}' + chr(10))
               env.write(f'COMPAT_VERSION_NAME={compatibility_version_name}' + chr(10))
 
-          package_prefix = re.compile(r'io\.github\.lejw0925\.virtualscreen(?!\.compat|\.fixture\b)')
-          for path in Path('app/src').rglob('*'):
-              if path.suffix not in {'.kt', '.java'}:
-                  continue
-              text = path.read_text()
-              updated = package_prefix.sub('io.github.lejw0925.virtualscreen.compat', text)
-              if updated != text:
-                  path.write_text(updated)
-              assert package_prefix.search(path.read_text()) is None, f'Unrebased app package reference in {path}'
           PY
       - name: Verify and describe unsigned compatibility candidate
         if: inputs.compatibility_candidate == true
@@ -140,6 +129,10 @@ jobs:
           expected = ('io.github.lejw0925.virtualscreen.compat', os.environ['COMPAT_VERSION_CODE'], os.environ['COMPAT_VERSION_NAME'])
           if not package or package.groups() != expected:
               raise SystemExit(f'Unexpected package/version metadata: {package.groups() if package else "missing"}')
+          expected_build_config = 'APPLICATION_ID = "io.github.lejw0925.virtualscreen.compat"'
+          build_configs = list(Path('app/build/generated').rglob('BuildConfig.java'))
+          if not any(expected_build_config in path.read_text() for path in build_configs):
+              raise SystemExit('Generated BuildConfig.APPLICATION_ID did not match the compatibility applicationId')
           manifest_dump = subprocess.run([str(build_tools / 'aapt'), 'dump', 'xmltree', str(apk), 'AndroidManifest.xml'], check=True, capture_output=True, text=True).stdout
           for authority in ('compat.display-bridge', 'compat.shizuku', 'compat.stellar'):
               if f'io.github.lejw0925.virtualscreen.{authority}' not in manifest_dump:
